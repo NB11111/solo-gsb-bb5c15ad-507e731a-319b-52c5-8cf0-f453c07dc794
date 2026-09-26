@@ -1,4 +1,4 @@
-"""FastAPI 入口：上传 GPX、遮蔽计算、导出、分段配速、海拔分析、漂移修复、停留识别、轨迹精简、双人轨迹相遇、检查点到访、静态页面。"""
+"""FastAPI 入口：上传 GPX、遮蔽计算、导出、分段配速、海拔分析、漂移修复、停留识别、轨迹精简、双人轨迹相遇、检查点到访、参考路线偏离、静态页面。"""
 from __future__ import annotations
 
 import uuid
@@ -18,6 +18,11 @@ from .checkpoint import (
     MIN_RADIUS_M as CP_MIN_RADIUS_M,
     Checkpoint,
     find_checkpoint_visits,
+)
+from .deviation import (
+    CORRIDOR_RADIUS_M,
+    MAX_GAP_S as DEV_MAX_GAP_S,
+    find_deviations,
 )
 from .drift import MAX_SPEED_MPS, MIN_OFFSET_M, fix_drift
 from .elevation import RESAMPLE_STEP_M, REVERSAL_THRESHOLD_M, elevation_profile
@@ -108,6 +113,11 @@ class CheckpointIn(BaseModel):
 class CheckpointVisitsRequest(BaseModel):
     track_id: str
     checkpoints: list[CheckpointIn] = Field(default=[], max_length=MAX_CHECKPOINTS)
+
+
+class DeviationRequest(BaseModel):
+    track_id: str
+    reference_track_id: str
 
 
 def _point_dict(p):
@@ -502,6 +512,44 @@ def checkpoint_visits(req: CheckpointVisitsRequest):
             "max_radius_m": CP_MAX_RADIUS_M,
             "default_radius_m": CP_DEFAULT_RADIUS_M,
             "max_gap_s": CP_MAX_GAP_S,
+        },
+    }
+
+
+def _deviation_dict(d):
+    return {
+        "seg_index": d.seg_index,
+        "start_time": d.start_time.isoformat(),
+        "end_time": d.end_time.isoformat(),
+        "duration_s": d.duration_s,
+        "distance_m": d.distance_m,
+        "start": {"lat": d.start_lat, "lon": d.start_lon},
+        "end": {"lat": d.end_lat, "lon": d.end_lon},
+    }
+
+
+@app.post("/api/deviations")
+def deviations(req: DeviationRequest):
+    """参考路线偏离分析：以参考轨迹（复用 /api/upload 上传的第二条 GPX）的原始
+    trkseg 折线为参考路线（忽略其时间），主轨迹使用上传时保存的原始数据；
+    到任一有限参考路段的最短距离 ≤ 50 米即在走廊内，逐条采样线段求落在各参考
+    路段走廊内的参数区间并取并集，补集即偏离区间，进出时刻与位置沿主轨迹线性插值。"""
+    track = _get_track(req.track_id)
+    ref = _get_track(req.reference_track_id)
+    try:
+        result = find_deviations(track["segments"], ref["segments"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "deviations": [_deviation_dict(d) for d in result.deviations],
+        "deviation_segments": [
+            [_point_dict(p) for p in seg] for seg in result.deviation_segments
+        ],
+        "total_duration_s": result.total_duration_s,
+        "total_distance_m": result.total_distance_m,
+        "thresholds": {
+            "corridor_radius_m": CORRIDOR_RADIUS_M,
+            "max_gap_s": DEV_MAX_GAP_S,
         },
     }
 

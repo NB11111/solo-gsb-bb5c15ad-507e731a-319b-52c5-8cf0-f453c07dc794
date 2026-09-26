@@ -220,6 +220,17 @@ button.secondary:hover { background: #fff5f5; }
 .cp-meta { font-weight: 400; color: #999; font-size: 12px; }
 .cp-none { color: #999; margin: 2px 0 4px; }
 .cp-table { margin-top: 6px; }
+
+.deviation { padding: 0 24px 24px; }
+.deviation h2 {
+  font-size: 14px;
+  margin: 0 0 8px;
+  padding-top: 14px;
+  border-top: 1px solid #f0f0f0;
+}
+.deviation .hint { margin: 8px 0 0; }
+.deviation .info b { color: #e64a19; }
+.deviation-table { margin-top: 8px; }
 #profile {
   width: 100%;
   height: 220px;
@@ -325,6 +336,8 @@ button.secondary:hover { background: #fff5f5; }
   border-radius: 50%;
   background: #d81b60;
 }
+.sw.reference { background: #f9a825; }
+.sw.deviation { background: #ff5722; height: 6px; }
 
 #message {
   position: fixed;
