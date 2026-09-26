@@ -16,10 +16,12 @@ const state = {
   drift: null,    // /api/drift 返回结果
   stays: null,    // /api/stays 返回结果
   simplify: null, // /api/simplify 返回结果
-  otherTrackId: null, // 对比轨迹（第二条上传的 GPX）
+  otherTrackId: null, // 对比轨迹 / 参考路线（第二条上传的 GPX）
   otherName: null,
+  otherSegments: [], // 参考路线原始分段（用于预览画线）
   encounters: null, // /api/encounters 返回结果
   checkpointVisits: null, // /api/checkpoint-visits 返回结果
+  deviations: null, // /api/deviations 返回结果
   transform: null,
 };
 
@@ -108,6 +110,11 @@ function draw() {
   // 原始轨迹（灰）
   for (const seg of state.segments) drawPolyline(seg, "#c4c4c4", 2 * dpr);
 
+  // 参考路线（蓝灰虚线，第二条上传的 GPX）
+  for (const seg of state.otherSegments) {
+    drawPolyline(seg, "#90a4ae", 1.5 * dpr, [4 * dpr, 4 * dpr]);
+  }
+
   // 裁切结果：隐藏段（红虚线）+ 可见段（蓝）
   if (state.masked) {
     for (const seg of state.masked.hidden_segments) {
@@ -122,6 +129,13 @@ function draw() {
   if (state.simplify) {
     for (const seg of state.simplify.segments) {
       drawPolyline(seg, "#00897b", 2.5 * dpr);
+    }
+  }
+
+  // 偏离段（深橙）
+  if (state.deviations) {
+    for (const d of state.deviations.deviations) {
+      drawPolyline(d.path, "#e64a19", 3.5 * dpr);
     }
   }
 
@@ -254,6 +268,7 @@ async function uploadFile(file) {
   state.stays = null;
   state.simplify = null;
   state.encounters = null;
+  state.deviations = null;
   document.getElementById("download-fixed").disabled = true;
   document.getElementById("download-simplified").disabled = true;
   computeTransform();
@@ -269,6 +284,7 @@ async function uploadFile(file) {
   await refreshSimplify();
   await refreshEncounters();
   await refreshCheckpointVisits();
+  await refreshDeviations();
 }
 
 let paceTimer = null;
@@ -486,8 +502,10 @@ async function uploadOtherFile(file) {
   if (!res.ok) throw new Error(errDetail(data, "对比轨迹上传失败"));
   state.otherTrackId = data.track_id;
   state.otherName = data.name;
+  state.otherSegments = data.segments;
   renderTrack2Info(data.stats);
   await refreshEncounters();
+  await refreshDeviations();
 }
 
 async function refreshEncounters() {
@@ -518,6 +536,40 @@ async function refreshEncounters() {
     state.encounters = null;
     el.classList.remove("muted");
     el.innerHTML = `<div class="pace-error">无法分析双人轨迹相遇：${escapeHtml(err.message)}</div>`;
+  }
+  draw();
+}
+
+/* ---------- 参考路线偏离 ---------- */
+
+async function refreshDeviations() {
+  const el = document.getElementById("deviation");
+  if (!state.trackId || !state.otherTrackId) {
+    state.deviations = null;
+    el.classList.add("muted");
+    el.textContent = state.otherTrackId
+      ? "请先上传当前轨迹"
+      : "上传第二条 GPX（参考路线）后自动分析偏离";
+    draw();
+    return;
+  }
+  try {
+    const res = await fetch("/api/deviations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        track_id: state.trackId,
+        reference_track_id: state.otherTrackId,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(errDetail(data, "偏离分析失败"));
+    state.deviations = data;
+    renderDeviations(data);
+  } catch (err) {
+    state.deviations = null;
+    el.classList.remove("muted");
+    el.innerHTML = `<div class="pace-error">无法分析参考路线偏离：${escapeHtml(err.message)}</div>`;
   }
   draw();
 }
@@ -910,7 +962,7 @@ function renderTrack2Info(s) {
   const t0 = s.start_time ? new Date(s.start_time).toLocaleString() : "-";
   const t1 = s.end_time ? new Date(s.end_time).toLocaleString() : "-";
   el.innerHTML =
-    `<div>对比轨迹：<b>${escapeHtml(state.otherName)}</b></div>` +
+    `<div>对比轨迹 / 参考路线：<b>${escapeHtml(state.otherName)}</b></div>` +
     `<div>轨迹点：<b>${s.points}</b> 个，原始分段：<b>${s.segments}</b> 个</div>` +
     `<div>总距离：<b>${fmtKm(s.distance_m)} km</b></div>` +
     `<div>时间：${t0}<br>至　${t1}</div>`;
@@ -938,6 +990,31 @@ function renderEncounters(data) {
     `（距离 ≤ 50 米且持续 ≥ 60 秒）</div>` +
     '<table class="pace-table encounter-table"><thead><tr>' +
     "<th>序</th><th>起止时间</th><th>持续时长</th><th>最近距离(m)</th>" +
+    `</tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderDeviations(data) {
+  const el = document.getElementById("deviation");
+  el.classList.remove("muted");
+  if (!data.deviations.length) {
+    el.innerHTML =
+      "<div>未发现偏离：主轨迹全程都在参考路线 50 米走廊内</div>";
+    return;
+  }
+  const rows = data.deviations.map((d, i) =>
+    "<tr>" +
+    `<td>${i + 1}</td>` +
+    `<td>${d.seg_index}</td>` +
+    `<td>${fmtTime(d.start_time)} ~ ${fmtTime(d.end_time)}</td>` +
+    `<td>${fmtDuration(d.duration_s)}</td>` +
+    "</tr>"
+  ).join("");
+  el.innerHTML =
+    `<div>偏离次数：<b>${data.deviations.length}</b> 次，` +
+    `累计偏离时长 <b>${fmtDuration(data.deviation_total_s)}</b>` +
+    `（到任一参考路段最短距离 ≤ 50 米算在走廊内）</div>` +
+    '<table class="pace-table deviation-table"><thead><tr>' +
+    "<th>序</th><th>原始分段</th><th>起止时间</th><th>偏离时长</th>" +
     `</tr></thead><tbody>${rows}</tbody></table>`;
 }
 

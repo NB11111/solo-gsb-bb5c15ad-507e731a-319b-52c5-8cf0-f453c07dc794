@@ -1,4 +1,4 @@
-"""FastAPI 入口：上传 GPX、遮蔽计算、导出、分段配速、海拔分析、漂移修复、停留识别、轨迹精简、双人轨迹相遇、检查点到访、静态页面。"""
+"""FastAPI 入口：上传 GPX、遮蔽计算、导出、分段配速、海拔分析、漂移修复、停留识别、轨迹精简、双人轨迹相遇、检查点到访、参考路线偏离、静态页面。"""
 from __future__ import annotations
 
 import uuid
@@ -19,6 +19,7 @@ from .checkpoint import (
     Checkpoint,
     find_checkpoint_visits,
 )
+from .deviation import CORRIDOR_M, MAX_GAP_S as DEV_MAX_GAP_S, find_deviations
 from .drift import MAX_SPEED_MPS, MIN_OFFSET_M, fix_drift
 from .elevation import RESAMPLE_STEP_M, REVERSAL_THRESHOLD_M, elevation_profile
 from .encounter import MAX_GAP_S as ENCOUNTER_MAX_GAP_S
@@ -108,6 +109,11 @@ class CheckpointIn(BaseModel):
 class CheckpointVisitsRequest(BaseModel):
     track_id: str
     checkpoints: list[CheckpointIn] = Field(default=[], max_length=MAX_CHECKPOINTS)
+
+
+class DeviationRequest(BaseModel):
+    track_id: str
+    reference_track_id: str
 
 
 def _point_dict(p):
@@ -502,6 +508,43 @@ def checkpoint_visits(req: CheckpointVisitsRequest):
             "max_radius_m": CP_MAX_RADIUS_M,
             "default_radius_m": CP_DEFAULT_RADIUS_M,
             "max_gap_s": CP_MAX_GAP_S,
+        },
+    }
+
+
+def _deviation_dict(d):
+    return {
+        "seg_index": d.seg_index,
+        "start_time": d.start_time.isoformat(),
+        "end_time": d.end_time.isoformat(),
+        "duration_s": d.duration_s,
+        "start_lat": d.start_lat,
+        "start_lon": d.start_lon,
+        "end_lat": d.end_lat,
+        "end_lon": d.end_lon,
+        "path": [{"lat": p.lat, "lon": p.lon} for p in d.path],
+    }
+
+
+@app.post("/api/deviations")
+def deviations(req: DeviationRequest):
+    """参考路线偏离分析：参考路线复用第二条上传的 GPX（只取其原始 trkseg 折线，
+    忽略时间，不同 trkseg 不相连），主轨迹使用上传时保存的原始数据；主轨迹到任一
+    有限参考路段的最短距离 ≤ 50 米算在走廊内，逐条采样线段求走廊内参数区间的并集，
+    补集即偏离区间；进出时刻与位置沿主轨迹线性插值；相邻采样超过 600 秒或跨
+    trkseg 断开，仅合并同段相接的正时长偏离区间。"""
+    track = _get_track(req.track_id)
+    ref = _get_track(req.reference_track_id)
+    try:
+        result = find_deviations(track["segments"], ref["segments"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "deviations": [_deviation_dict(d) for d in result.deviations],
+        "deviation_total_s": result.deviation_total_s,
+        "thresholds": {
+            "corridor_m": CORRIDOR_M,
+            "max_gap_s": DEV_MAX_GAP_S,
         },
     }
 
